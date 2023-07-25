@@ -1,7 +1,7 @@
 use async_openai::{
     types::{
         ChatCompletionFunctionsArgs, ChatCompletionRequestMessageArgs,
-        CreateChatCompletionRequestArgs, Role,
+        CreateChatCompletionRequestArgs, FunctionCall, Role,
     },
     Client,
 };
@@ -10,8 +10,16 @@ use std::error::Error;
 use std::{collections::HashMap, future::Future, pin::Pin};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
+static SYSTEM_MSG: &str = r#"
+You are a personal assistant. 
+You always log and save information from user using persist_data function using any of the types. 
+If there is something you can comment about the message and suggest ideas, 
+enhance input with valuable information add it to data. 
+If it's not clear what to do next you ask user about further guidance.
+"#;
+
 enum StoredFunction {
-    Option0(Box<dyn Fn() -> ()>),
+    // Option0(Box<dyn Fn() -> ()>),
     Option1(Box<dyn Fn(String) -> Pin<Box<dyn Future<Output = serde_json::Value> + Send>> + Send>),
     Option2(
         Box<
@@ -36,25 +44,65 @@ pub async fn getw() -> Result<(), Box<dyn Error>> {
     let request = CreateChatCompletionRequestArgs::default()
         .max_tokens(512u16)
         .model("gpt-3.5-turbo-0613")
-        .messages([ChatCompletionRequestMessageArgs::default()
-            .role(Role::User)
-            .content("What's the weather like in Boston?")
-            .build()?])
-        .functions([ChatCompletionFunctionsArgs::default()
-            .name("get_current_weather")
-            .description("Get the current weather in a given location")
-            .parameters(json!({
-                "type": "object",
-                "properties": {
-                    "location": {
-                        "type": "string",
-                        "description": "The city and state, e.g. San Francisco, CA",
+        .messages([
+            ChatCompletionRequestMessageArgs::default()
+                .role(Role::System)
+                .content(SYSTEM_MSG)
+                .build()?,
+            ChatCompletionRequestMessageArgs::default()
+                .role(Role::User)
+                // .content("buy some milk")
+                .content("note some ideas how to get back into a healthy relationship")
+                .build()?,
+        ])
+        .functions([
+            ChatCompletionFunctionsArgs::default()
+                .name("get_current_weather")
+                .description("Get the current weather in a given location")
+                .parameters(json!({
+                    "type": "object",
+                    "properties": {
+                        "location": {
+                            "type": "string",
+                            "description": "The city and state, e.g. San Francisco, CA",
+                        },
+                        "unit": { "type": "string", "enum": ["celsius", "fahrenheit"] },
                     },
-                    "unit": { "type": "string", "enum": ["celsius", "fahrenheit"] },
-                },
-                "required": ["location"],
-            }))
-            .build()?])
+                    "required": ["location"],
+                }))
+                .build()?,
+            ChatCompletionFunctionsArgs::default()
+                .name("persist_data")
+                .description("Persis data into a database")
+                .parameters(json!({
+                    "type": "object",
+                    "properties": {
+                        "data": {
+                            "type": "string",
+                            "description": "The data to save",
+                        },
+                        "type": {
+                            "type": "string",
+                            "enum": [
+                                "task",
+                                "note",
+                                "reminder",
+                                "event",
+                                "contact",
+                                "location",
+                                "link",
+                                "file",
+                                "image",
+                                "video",
+                                "audio"
+                            ],
+                            "description": "The type of data to save",
+                        }
+                    },
+                    "required": ["task"],
+                }))
+                .build()?,
+        ])
         .function_call("auto")
         .build()?;
 
@@ -79,25 +127,48 @@ pub async fn getw() -> Result<(), Box<dyn Error>> {
                 Box::pin(get_current_weather(location, unit))
             })),
         );
-        let function_name = function_call.name;
-        let function_args: serde_json::Value = function_call.arguments.parse().unwrap();
 
-        let location = function_args["location"].to_string();
-        let unit = "fahrenheit".to_string();
-        let function = available_functions.get(function_name.as_str()).unwrap();
-        let function_response = match function {
-            StoredFunction::Option2(f) => {
-                let result = f(location, unit).await;
-                println!("result = {:?}", result);
-                result
+        available_functions.insert(
+            "persist_data",
+            StoredFunction::Option2(Box::new(|data, data_type| Box::pin(persist_data(data, data_type)))),
+        );
+
+        let (function_response, function_name) = match function_call {
+            FunctionCall {
+                name: function_name,
+                arguments: function_args,
+            } => {
+                println!("function_name = {:?}", function_name);
+                let function = available_functions.get(function_name.as_str()).unwrap();
+                let function_args: serde_json::Value = function_args.parse().unwrap();
+                let function_response = match (function, function_name.as_str()) {
+                    (StoredFunction::Option2(f), "get_current_weather") => {
+                        let location = function_args["location"].to_string();
+                        let unit = "fahrenheit".to_string();
+                        let result = f(location, unit).await;
+                        (result, function_name)
+                    }
+                    (StoredFunction::Option2(f), "persist_data") => {
+                        let data = function_args["data"].to_string();
+                        let data_type = function_args["type"].to_string();
+                        let result = f(data, data_type).await;
+                        (result, function_name)
+                    }
+                    _ => panic!("function not found"),
+                };
+                function_response
             }
-            _ => json!({"error": "function not found"}),
         };
 
         let message = vec![
             ChatCompletionRequestMessageArgs::default()
+                .role(Role::System)
+                .content(SYSTEM_MSG)
+                .build()?,
+            ChatCompletionRequestMessageArgs::default()
                 .role(Role::User)
-                .content("What's the weather like in Boston?")
+                // .content("buy some milk")
+                .content("note some ideas how to get back into a healthy relationship")
                 .build()?,
             ChatCompletionRequestMessageArgs::default()
                 .role(Role::Function)
@@ -124,6 +195,17 @@ pub async fn getw() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+async fn persist_data(data: String, data_type: String) -> serde_json::Value {
+    println!("saving data = {:?}", data);
+    let saved_data = json!({
+        "data": data,
+        "type": data_type,
+        "id": "1234",
+    });
+
+    saved_data
 }
 
 async fn get_current_weather(location: String, unit: String) -> serde_json::Value {
