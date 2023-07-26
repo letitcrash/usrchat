@@ -12,9 +12,22 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 static SYSTEM_MSG: &str = r#"
 You are a personal assistant. 
-You always log and save information from user using persist_data function using any of the types. 
-If there is something you can comment about the message and suggest ideas, 
-enhance input with valuable information add it to data. 
+If you think that user message is a command to save data, 
+you can use persist_data function to save it in database.
+Use the following types:
+- task
+- note
+- reminder
+- event
+- contact
+- location
+- link
+- file
+- image
+- video
+- audio
+If there is something you can comment about user message and suggest ideas, 
+enhance it with valuable information and add it data to be persisted in database. 
 If it's not clear what to do next you ask user about further guidance.
 "#;
 
@@ -106,17 +119,14 @@ pub async fn getw() -> Result<(), Box<dyn Error>> {
         .function_call("auto")
         .build()?;
 
-    let response_message = client
+    let mut response = client
         .chat()
         .create(request)
-        .await?
-        .choices
-        .get(0)
-        .unwrap()
-        .message
-        .clone();
+        .await?;
 
-    print!("Response: {:?}", response_message);
+    let response_message = response.choices[0].message.clone();
+
+    // print!("Response: {:?}", response_message);
 
     if let Some(function_call) = response_message.function_call {
         let mut available_functions: HashMap<&str, StoredFunction> = HashMap::new();
@@ -183,15 +193,17 @@ pub async fn getw() -> Result<(), Box<dyn Error>> {
             .messages(message)
             .build()?;
 
-        let response = client.chat().create(request).await?;
+        // override response
+        response = client.chat().create(request).await?;
+    }
 
-        println!("\nResponse:\n");
-        for choice in response.choices {
-            println!(
-                "{}: Role: {}  Content: {:?}",
-                choice.index, choice.message.role, choice.message.content
-            );
-        }
+
+    println!("\nResponse:\n");
+    for choice in response.choices {
+        println!(
+            "{}: Role: {}  Content: {:?}",
+            choice.index, choice.message.role, choice.message.content
+        );
     }
 
     Ok(())
