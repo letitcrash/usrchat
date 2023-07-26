@@ -10,6 +10,9 @@ use std::error::Error;
 use std::{collections::HashMap, future::Future, pin::Pin};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
+pub mod client;
+pub mod functions;
+
 static SYSTEM_MSG: &str = r#"
 You are a personal assistant. 
 If you think that user message is a command to save data, 
@@ -42,7 +45,7 @@ enum StoredFunction {
     ),
 }
 
-pub async fn getw() -> Result<(), Box<dyn Error>> {
+pub async fn get_response(input: &str) -> Result<String, Box<dyn Error>> {
     // This should come from env var outside the program
     std::env::set_var("RUST_LOG", "warn");
 
@@ -206,7 +209,7 @@ pub async fn getw() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    Ok(())
+    Ok("response".to_string())
 }
 
 async fn persist_data(data: String, data_type: String) -> serde_json::Value {
